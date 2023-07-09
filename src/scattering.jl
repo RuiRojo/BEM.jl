@@ -477,8 +477,8 @@ Return a vector of versors that rotate around the `axis` which can be `:x`, `:y`
 axis_sweep(axis, n::Integer=100; θmax=2pi) = axis_sweep(axis, range(0; length=n, step=θmax/n))
 function axis_sweep(axis, angles::AbstractVector)
     axis == :z && return [ Versor( phi,  pi/2)  for phi   in angles]
-    axis == :x && return [ Versor( pi/2, theta) for theta in range(0; length=n, step=θmax/n) ]
-    axis == :y && return [ Versor( 0,    theta) for theta in range(0; length=n, step=θmax/n) ]
+    axis == :x && return [ Versor( pi/2, theta) for theta in angles ]
+    axis == :y && return [ Versor( 0,    theta) for theta in angles ]
 end
 "Rotation matrix around the axis :x, :y, or :z, by angle θ (radians)"
 function rotmat(s::Symbol, θ)
