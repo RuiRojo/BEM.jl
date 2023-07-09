@@ -24,7 +24,6 @@ end
 """
 Create a function that takes an array, interprets it as corresponding to values on`grid`,
 and performs (linear) convolution with `fun`.
-
 """
 Convolver(func, grid; preallocate=false, ceilfun=(n->nextprod((2, 3), n)), verbose=false) = mytime("Convolver"; verbose) do
     σ_grid_size = size(grid)
@@ -48,7 +47,7 @@ Convolver(func, grid; preallocate=false, ceilfun=(n->nextprod((2, 3), n)), verbo
 
     return Convolver(FFT!, IFFT!, grid, gf, σ_grid_pad_pre)
 end
-    # el parchongo
+    # (temporary kludge because, last I checked, the built-in ifft in my PC was slower than this for whatever reason)
     struct MyIFFT!
         FFT!
     end

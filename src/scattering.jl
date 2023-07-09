@@ -34,7 +34,7 @@ It can receive pre-computed `bv::BoundaryValues` or a `mesh` and a _kwarg_ `k`.
 backscattering(bv::BoundaryValues, idir::Versor; kwargs...) = bv(-idir; kwargs...)
 function backscattering(mesh::AbstractMesh, idir::Versor; k, quad=quad_default, kwargs...)
     backscattering(
-        scattering_boundary(mesh, idir; k, quad, kwargs...),
+        scattering_boundary(mesh, idir; k, kwargs...),
         idir; 
         quad
     )
@@ -44,12 +44,13 @@ backscattering(mesh::AbstractMesh, idirs;
     quad=quad_default, 
     kwargs...) = run_and_gc() do
     
-    @mytime "Computing operator" bvs = scattering_boundary(mesh, idirs; k, quad, kwargs...)
+    bvs = scattering_boundary(mesh, idirs; k, kwargs...)
 
         # A progress logger should be added here, but ProgressLogging.jl doesn't work with `map`
-    out = @mytime "Computing boundary and backscattering" map(idirs, bvs) do idir, bv
-        backscattering(bv, idir; quad)
-    end
+    @mytime "Computing boundary and backscattering" @progress "Sweeping incidence dirs" out = [
+        backscattering(take!(bvs), idir; quad)
+        for idir in idirs
+    ]
     return out
 end
 
@@ -63,9 +64,9 @@ Return the forward scattering in the farfield.
 It can receive pre-computed `bv::BoundaryValues` or a `mesh` and a _kwarg_ `k`.
 """
 forward_scattering(bv::BoundaryValues, incidence_dir::Versor; kwargs...) = bv(incidence_dir; kwargs...)
-function forward_scattering(mesh::AbstractMesh, incidence_dir::Versor; k, quad=quad_default, kwargs...)
+function forward_scattering(mesh::AbstractMesh, incidence_dir::Versor; k, verbose=false, quad=quad_default, kwargs...)
     forward_scattering(
-        scattering_boundary(mesh, incidence_dir; k, kwargs...), incidence_dir; quad
+        scattering_boundary(mesh, incidence_dir; k, kwargs...), incidence_dir; quad, verbose
     )
 end
 forward_scattering(mesh::AbstractMesh, idirs; 
@@ -73,11 +74,17 @@ forward_scattering(mesh::AbstractMesh, idirs;
     quad=quad_default, 
     kwargs...) = run_and_gc() do
     
-    @mytime "Computing operator" bvs = scattering_boundary(mesh, idirs; k, quad, kwargs...)
-
+    bvs = scattering_boundary(mesh, idirs; k, kwargs...)
+#=
     out = @mytime "Computing boundary and forward scattering" map(idirs, bvs) do idir, bv
             forward_scattering(bv, idir; quad)
-    end
+    end=#
+    @mytime "Computing boundary and forward scattering" @progress "Sweeping incidence dirs" out = [
+        forward_scattering(take!(bvs), idir; quad)
+        for idir in idirs
+    ]
+
+
     return out
 end
 
@@ -150,11 +157,40 @@ end
 
 Like `scattering_boundary(mesh, incidence_dir; kwargs...)` but returns
 a curried function that expects `incidence_dir` as argument.
+
+# Keyword arguments
+
+- formulation: This can be DirectFormulation() or IndirectFormulation(), which can receive
+the μ parameter as argument. It can also be a SurfaceIntegralOperator like L/M/Mt/N. Note that
+L is only possible for Dirichlet BC and N for Neumann. 
 """
-function scattering_boundary(mesh; k, b_builder, φ_interp, 
-    quad=quad_default,
+function scattering_boundary(mesh; k, BC, 
+    formulation=IndirectFormulation, μ=nothing, 
+    algorithm=Exact(), solver=def_solver(algorithm), 
+    verbose=false
+    )
+
+    ;b_builder, φ_interp, lm_grtor = pars(BC, formulation, μ) 
+    lm_builder = lm_grtor(algorithm)
+
+    return _scattering_boundary(mesh; k, 
+        b_builder, 
+        φ_interp, 
+        verbose,
+        lm_builder, 
+        solver
+    ) 
+end
+
+def_solver(::Type{Exact{Matrix}}) = (/)
+def_solver(::Type{Exact{LinearMap}}) = gmres 
+def_solver(::Type{Accelerated}) = gmres
+def_solver(_) = gmres
+
+
+function _scattering_boundary(mesh; k, b_builder, φ_interp, 
     verbose=false,
-    lm_builder = (mesh; k) -> create_operator_exact_matrix(L, mesh; k, quad), 
+    lm_builder, 
     solver= (\)) 
 
     verbose && @myinfo "The maximum edge length is $(round(facet_vs_λ(mesh; k); digits=2)) times λ"
@@ -165,7 +201,7 @@ function scattering_boundary(mesh; k, b_builder, φ_interp,
                 # Linear map
                 A_raw = lm_builder(mesh; k)
                     
-                    # Special treatment
+                    # tmp: special treatment to optimize for repeated matrix solutions (same mesh and k, different incidences)
                 A = solver isa typeof(\) ? lu(A_raw) : A_raw
             end
         end
@@ -199,7 +235,7 @@ end
 Return a channel of the successive densities for the incidence directions
 specified in `incidence_dir_iter`.
 """
-scattering_boundary(mesh, incidence_dirs; kwargs...) = Channel{BoundaryValues}(1; spawn=true) do ch
+scattering_boundary(mesh, incidence_dirs; kwargs...) = Channel{BoundaryValues}(#=1; spawn=false=#) do ch
     with_memoize() do
         fun = scattering_boundary(mesh; kwargs...)
         for idir in incidence_dirs
@@ -318,7 +354,12 @@ end
 (bv::BoundaryValues)(xs; kwargs...) = bv.(xs; kwargs...)
 
 
-# Estas funciones están duplicadas con otro nombre, ¿no? create_operator_exact_lm or something
+"""
+    operator(L, mesh, ψs)
+    operator(M, mesh, ψs)
+
+    Return a function of `x` that computes the field of the acoustic monopole (L) or dipole (M) at `x`.
+"""
 function operator(::Type{L}, mesh::AbstractMesh, φs; k, quad=@quad_gquts(6))
     x -> sum(zip(mesh, φs)) do (face, φ)
         φ * integrate_triangle( y -> green(x, y; k=k), face; quad)
@@ -433,10 +474,17 @@ end
 
 Return a vector of versors that rotate around the `axis` which can be `:x`, `:y`, or `:z`.
 """
-function axis_sweep(axis, n=100)
-    axis == :z && return [ Versor( phi,  pi/2)  for phi   in range(0; length=n, step=2pi/n) ]
-    axis == :x && return [ Versor( pi/2, theta) for theta in range(0; length=n, step=2pi/n) ]
-    axis == :y && return [ Versor( 0,    theta) for theta in range(0; length=n, step=2pi/n) ]
+axis_sweep(axis, n::Integer=100; θmax=2pi) = axis_sweep(axis, range(0; length=n, step=θmax/n))
+function axis_sweep(axis, angles::AbstractVector)
+    axis == :z && return [ Versor( phi,  pi/2)  for phi   in angles]
+    axis == :x && return [ Versor( pi/2, theta) for theta in range(0; length=n, step=θmax/n) ]
+    axis == :y && return [ Versor( 0,    theta) for theta in range(0; length=n, step=θmax/n) ]
+end
+"Rotation matrix around the axis :x, :y, or :z, by angle θ (radians)"
+function rotmat(s::Symbol, θ)
+    s == :x && return @SMatrix [ 1 0 0; 0 cos(θ) -sin(θ); 0 sin(θ) cos(θ) ]
+    s == :y && return @SMatrix [ cos(θ) 0 sin(θ); 0 1 0; -sin(θ) 0 cos(θ) ]
+    return @SMatrix [ cos(θ) -sin(θ) 0; sin(θ) cos(θ) 0; 0 0 1]
 end
 
 function logmessage(n, error)

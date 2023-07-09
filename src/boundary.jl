@@ -2,8 +2,8 @@ abstract type BoundaryCondition end
 abstract type Dirichlet <: BoundaryCondition end
 abstract type Neumann <: BoundaryCondition end
 abstract type Formulation end
-abstract type DirectFormulation <: Formulation end
-abstract type IndirectFormulation <: Formulation end
+abstract type DirectFormulation end
+abstract type IndirectFormulation end
 
 Base.@kwdef struct BoundaryValues <: Function
     mesh :: LightMesh

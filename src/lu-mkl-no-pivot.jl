@@ -3,6 +3,7 @@ using MKL_jll, LinearAlgebra
 import LinearAlgebra: BlasInt
 
 
+# Just a blas function that wasn't wrapped in the standard library that's needed by `solve_all_partials`
 function lu_mkl_nopivot!(r::Matrix{Float64})
     n = size(r, 1)
     ccall(

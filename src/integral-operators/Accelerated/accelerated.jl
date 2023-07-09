@@ -1,126 +1,75 @@
-potential(::Type{L}; k, rmin=1e-5) = @SMatrix [ function (x)
-    r = norm(x)
-    out = green(r; k)
-    return r < rmin ? zero(out) : out
-end for _ in 1:1, _ in 1:1]
-
-
-potential(::Type{M}; k, rmin=1e-5) = @SMatrix [
-
-    function (x)
-            r = norm(x)
-            out = x[i] * green(r; k) * (1 - im * k * r) / r^2
-            return r < rmin ? zero(out) : out
-        end
-        for i in 1:3, _ in 1:1
-            
-    ]
-
-
-potential(::Type{Mt}; k, rmin=1e-5) = (-) .∘ permutedims(potential(M; k, rmin))
-
-
-
-
-potential(::Type{N}; k, rmin=1e-5) = @SMatrix [
-    function(xmy)
-        r = norm(xmy)
-        kr = k * r
-        ikr = im * kr
-        val = -(3 + (ikr - 3) * ikr) * xmy[j] * xmy[i] / r^4 + (i == j) * (1 - ikr) / r^2
-        
-        out = green(r; k) * val
-        return r < rmin ? zero(out) : out
-    end
-    for i in 1:3, j in 1:3
-]
-
-
-#=
-potential_v2(::Type{M}; k, rmin=1e-5) = @SMatrix [
-        function (x)
-            r = norm(x)
-            out = der(Δyi -> green(Δyi * ydir, x; k), 0)
-            return r < rmin ? zero(out) : out
-        end
-        for ydir in (@SVector([1, 0, 0]), @SVector([0, 1, 0]), @SVector([0, 0, 1])), _ in 1:1            
-    ]
-
-potential_v2(::Type{Mt}; k, rmin=1e-5) = [
-    function (x)
-        r = norm(x)
-        out = der(Δxi -> green(@SVector([0, 0, 0]), x + Δxi * xdir; k), 0)
-        return r < rmin ? zero(out) : out
-    end
-    for xdir in (@SVector([1, 0, 0]), @SVector([0, 1, 0]), @SVector([0, 0, 1]))
-]
-
-function potential_v2(::Type{N}; k, rmin=1e-5)
-    function fun(i, x)
-        r = norm(x)
-        out = x[i] * green(r; k) * (1 - im * k * r) / r^2
-        return r < rmin ? zero(out) : out
-    end
-
-    @SMatrix [
-
-        x -> der(Δx -> fun(i, x + Δx * xdir), 0)
-        for i in 1:3,
-            xdir in (@SVector([1, 0, 0]), @SVector([0, 1, 0]), @SVector([0, 0, 1]))
-    ]
-end 
-
-function potential_v3(::Type{N}; k, rmin=1e-5)
-    function fun(i, x)
-        r = norm(x)
-        out = x[i] * green(r; k) * (1 - im * k * r) / r^2
-        return r < rmin ? zero(out) : out
-    end
-
-    @SMatrix [
-        
-        function (x)
-            r = norm(x)
-            out = der(Δyi ->
-                    der(Δxi -> green(Δyi * ydir, x + Δxi * xdir; k), 
-                    0),
-                    0)
-            return r < rmin ? zero(out) : out
-        end
-        for ydir in (@SVector([1, 0, 0]), @SVector([0, 1, 0]), @SVector([0, 0, 1])),
-            xdir in (@SVector([1, 0, 0]), @SVector([0, 1, 0]), @SVector([0, 0, 1]))
-    ]
-end 
-=#
-
-## Newest
+_def_gridfactor = 1
+_def_h_nterms = [ 8#=, 17=# ]
 
 """
-create_operator_approx(op<:Operator, mesh; k, λs_near=0.01, gridfactor=1, quad=quad_default, h_nterms=17, parallel_tasks=false, correction=true)
+create_operator_accel(op<:SurfaceIntegralOperator, mesh; k, λs_near=0.01, gridfactor=$(_def_gridfactor), quad=quad_default, h_nterms=17, parallel_tasks=false, correction=true)
 
 Return a LinearMap that that applies `op` to a vector of mesh values.
 """
-create_operator_approx(OP, mesh; k, 
-            λs_near=nothing, 
-            r_near=nothing, 
-            gridfactor=1, 
-            quad=quad_default, 
-            h_nterms=8, 
-            include_nearest=true,
-            verbose=false
-            ) = mytime("Creating approximate operator"; verbose, gc=true) do
+function create_operator_accel(OP, mesh; k, 
+    λs_near=nothing, 
+    r_near=nothing, 
+    gridfactor=_def_gridfactor, 
+    quad=quad_default, 
+    h_nterms=_def_h_nterms, 
+    include_nearest=true,
+    scaleinterp=true,
+    verbose=false
+    )
+   
+    @assert isnothing(λs_near) || isnothing(r_near)  "You can't set both `λs_near` and `r_near`"
+    isnothing(r_near) && (r_near = isnothing(λs_near) ? 0 : λs_near * 2π / k)
+
+    return Accelerated(; gridfactor, quad, h_nterms, include_nearest, r_near, scaleinterp, verbose)(OP, mesh; k)
+end
+            
+
+
+struct Accelerated <: SurfaceIntegralOperatorAlgorithm
+    gridfactor :: Float32
+    quad :: QuadratureRule
+    h_nterms :: Vector{Int}
+    r_near  :: Float32
+    include_nearest :: Bool
+
+    scaleinterp :: Bool # Tmp
+    verbose :: Bool
+end
+
+function Accelerated(; 
+    gridfactor = _def_gridfactor,
+    quad = quad_default,
+    h_nterms = _def_h_nterms,
+    r_near = 0,
+    include_nearest=true,
+    scaleinterp=true,
+    verbose=false
+    )
+
+    ns = h_nterms isa Integer ? interp_coefs_upto(h_nterms) : sort(h_nterms)
+
+    return Accelerated(gridfactor, quad, ns, r_near, include_nearest, scaleinterp, verbose)
+end
+
+
+(a::Accelerated)(OP, mesh; k) = mytime("Creating accelerated operator"; verbose=a.verbose, gc=true) do
+    gridfactor = a.gridfactor
+    quad = a.quad
+    include_nearest = a.include_nearest
+    verbose = a.verbose
+    r_near = a.r_near
 
     edgelength = edgelenstats(mesh).deciles[9]
     grid = Grid(mesh; gridfactor, edgelength)
     verbose && @myinfo "Grid size: $(size(grid))"
 
-    pots = potential(OP; k)
+    pots = kernel(OP; k)
 
     @mytime "$OP" begin
-        INTERP = Interpolator(mesh, grid; n=h_nterms, verbose)
+        INTERP = Interpolator(mesh, grid; ns=a.h_nterms, scale=a.scaleinterp, verbose)
         PROJ   = (size(pots, 1) == 1 ? ScalarProjector : VectorProjector)(mesh, INTERP; quad, verbose)
         CONVs  = @mytime "Convolvers" map(fun -> Convolver(fun, grid), pots) 
-        FIX    = make_fixer(OP, mesh, PROJ; k, λs_near, r_near, include_nearest, verbose)
+        FIX    = make_fixer(OP, mesh, PROJ; k, r_near, include_nearest, verbose, quad)
     end
 
     function s(σs)
@@ -158,11 +107,11 @@ struct Grid <: AbstractArray{Float32, 3}
 end
 
 """
-    Grid(mesh; gridfactor=2, edgelength=[90% quantile])
+    Grid(mesh; gridfactor=$(_def_gridfactor), edgelength=[90% quantile])
 
 Return a grid where 
 """
-function Grid(mesh::AbstractMesh; gridfactor=0.5, edgelength=edgelenstats(mesh).deciles[9])
+function Grid(mesh::AbstractMesh; gridfactor=_def_gridfactor, edgelength=edgelenstats(mesh).deciles[9])
     Δr :: Float32 = edgelength / gridfactor
 
     # The grid; e.g., (0.2:Δr:0.4, 12.3:Δr:13:3, -2.2:Δr:-1.1)
@@ -195,7 +144,7 @@ Base.step(g::Grid) = g.x.step
 Base.size(g::Grid) = length.((g.x, g.y, g.z))
 
 for fn in ("interpolator.jl", "projector.jl", "convolver.jl", "fixer.jl")
-    include(joinpath("Accelerated", fn))
+    include(fn)
 end
 
 function computeneighbourhood(face::Face, grid)
@@ -215,11 +164,11 @@ computeneighbourhood(val::Number, ran) = searchsortedfirst(ran, val) .+ (-1, 0)
 
 #=
 
-function create_operator_approx_old(::Type{L}, mesh; k, λs_near=0.01, gridfactor=2, quad=quad_default, h_nterms=8, verbose=false)
+function create_operator_accel_old(::Type{L}, mesh; k, λs_near=0.01, gridfactor=_def_gridfactor, quad=quad_default, h_nterms=8, verbose=false)
 
     grid = Grid(mesh; gridfactor)
 
-    pot = potential(L; k)
+    pot = kernel(L; k)
 
     @timeit to "Pre-processing" begin
         @timeit to "Interpolator"  INTERP = Interpolator(mesh, grid; n=h_nterms)
@@ -250,12 +199,12 @@ function create_operator_approx_old(::Type{L}, mesh; k, λs_near=0.01, gridfacto
 end
 
 
-function create_operator_approx_old(::Type{M}, mesh; k, λs_near=0.01, gridfactor=2, quad=quad_default, h_nterms=8, verbose=false)
+function create_operator_accel_old(::Type{M}, mesh; k, λs_near=0.01, gridfactor=_def_gridfactor, quad=quad_default, h_nterms=8, verbose=false)
 
 
     grid = Grid(mesh; gridfactor)
 
-    pots = potential(M; k)
+    pots = kernel(M; k)
 
     @timeit to "Pre-processing" begin
         @timeit to "Interpolator"  INTERP = Interpolator(mesh, grid; n=h_nterms)
@@ -285,11 +234,11 @@ function create_operator_approx_old(::Type{M}, mesh; k, λs_near=0.01, gridfacto
     return LinearMap{ComplexF32}(s, length(mesh), length(mesh))
 end
 
-function create_operator_approx_old(::Type{Mt}, mesh; k, λs_near=0.01, gridfactor=2, quad=quad_default, h_nterms=8, verbose=false)
+function create_operator_accel_old(::Type{Mt}, mesh; k, λs_near=0.01, gridfactor=_def_gridfactor, quad=quad_default, h_nterms=8, verbose=false)
 
     grid = Grid(mesh; gridfactor)
 
-    pots = potential(Mt; k)
+    pots = kernel(Mt; k)
 
     @timeit to "Pre-processing" begin
         @timeit to "Interpolator"  INTERP = Interpolator(mesh, grid; n=h_nterms)
@@ -319,11 +268,11 @@ function create_operator_approx_old(::Type{Mt}, mesh; k, λs_near=0.01, gridfact
     return LinearMap{ComplexF32}(s, length(mesh), length(mesh))
 end
 
-function create_operator_approx_old(::Type{N}, mesh; k, λs_near=0.01, gridfactor=2, quad=quad_default, h_nterms=8, verbose=false)
+function create_operator_accel_old(::Type{N}, mesh; k, λs_near=0.01, gridfactor=_def_gridfactor, quad=quad_default, h_nterms=8, verbose=false)
 
     grid = Grid(mesh; gridfactor)
 
-    pots = potential(N; k)
+    pots = kernel(N; k)
 
     @timeit to "Pre-processing" begin
         @timeit to "Interpolator"  INTERP  = Interpolator(mesh, grid; n=h_nterms)
@@ -359,11 +308,11 @@ end
 
 
 """
-    create_operator_approx_original(op<:Operator, mesh; k, λs_near=0.01, gridfactor=1, quad=quad_default, h_nterms=17, parallel_tasks=false, correction=true)
+    create_operator_accel_original(op<:SurfaceIntegralOperator, mesh; k, λs_near=0.01, gridfactor=_def_gridfactor, quad=quad_default, h_nterms=17, parallel_tasks=false, correction=true)
 
     Return a LinearMap that that applies `op` to a vector of mesh values.
 """
-function create_operator_approx_original(::Type{L}, mesh; k, λs_near=0.01, gridfactor=2, quad=quad_default, h_nterms=8, parallel_tasks=false, correction=true)
+function create_operator_accel_original(::Type{L}, mesh; k, λs_near=0.01, gridfactor=_def_gridfactor, quad=quad_default, h_nterms=8, parallel_tasks=false, correction=true)
     r_near = λs_near * 2π / k
     @show r_near
     # The grid step, and an upper bound to the minimum radius of the circumcircles
@@ -593,7 +542,7 @@ function create_operator_approx_original(::Type{L}, mesh; k, λs_near=0.01, grid
     return LinearMap{ComplexF64}(s, length(mesh), length(mesh))
 end
 
-function create_operator_approx_original(::Type{M}, mesh; k, λs_near=0.01, gridfactor=1, quad=quad_default, h_nterms=17, parallel_tasks=false, correction=true)
+function create_operator_accel_original(::Type{M}, mesh; k, λs_near=0.01, gridfactor=_def_gridfactor, quad=quad_default, h_nterms=17, parallel_tasks=false, correction=true)
     r_near = λs_near * 2π / k
     @show r_near
     # The grid step, and an upper bound to the minimum radius of the circumcircles

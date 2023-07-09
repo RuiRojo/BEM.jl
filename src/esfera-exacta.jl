@@ -1,5 +1,3 @@
-
-
 using SpecialFunctions
 
 #=
@@ -45,17 +43,16 @@ debida a una onda plana incidente de amplitud 'P0'.
 El cálculo se hace para condiciones de contorno 'bc' que pueden
 ser "Dir" o "Neu".
 Se asume que la incidencia es en "+z".
-"""
+"""   # Adaptación de código cortesía de Edmundo Lavia
 function nearfield_sphere( k::Real, r::Real, theta::Real, a::Real, bc::String, P0::Real = 1; ecs=eps(), minterms=30, poisson_ratio=0.25, ρ1=1)
     k < 0 && return conj(nearfield_sphere(-k, r, theta, a, bc, P0; ecs, minterms, poisson_ratio, ρ1))
-    # Author: Edmundo Lavia
     acumulator = ComplexF64( 0 ) ;
     C = Float64(1) ;
     x = k * a ;
     # Se suman `minterms` términos en la suma o bien hasta 
     # que C sea despreciable en aporte
     j = 0 ;
-    if bc == "Dur" # Durichlet
+    if bc == "Dur" # "Durichlet" - prueba (no es culpa de Edmundo) de BC de objeto duro, que puede oscilar en su conjunto (a diferencia de Neumann) 
         while ( abs( C ) > ecs  ) || ( j < minterms )
             C = if j != 1
                 - Sbessj_p( j, x ) / Sneum_p( j, x ) ;

@@ -30,19 +30,15 @@ end
 
 function get_facet_neighbourhoods end
 push!(MEMO_FUNS, get_facet_neighbourhoods)
-@memoize #=@maybe_memoize=# IdDict get_facet_neighbourhoods(mesh, grid) = ThreadsX.map(f -> computeneighbourhood(f, grid), mesh)
+@memoize #=@maybe_memoize=# IdDict get_facet_neighbourhoods(mesh, grid) = ThreadsX.map(face -> computeneighbourhood(face, grid), mesh)
 
 
 function get_nearby_facets(mesh, grid; 
-    λs_near=nothing, 
-    r_near=nothing, 
+    r_near=0f0, 
     include_nearest=true,
     verbose=false,
     neigh_node_idxs=get_facet_neighbourhoods(mesh, grid)
     )
-    
-    @assert isnothing(λs_near) || isnothing(r_near)  "You can't set both `λs_near` and `r_near`"
-    isnothing(r_near) && (r_near = isnothing(λs_near) ? 0 : λs_near * 2π / k)
 
 
     nearby_facets = _get_nearby_facets(
@@ -127,7 +123,7 @@ make_fixer(OP, mesh, PROJ; k,
 
         vals = ThreadsX.map(ijs) do (i, j)
             
-            nsrc = normal(mesh[j]) # This is sometimes not needed but I doubt it dominates the compute time
+            nsrc = normal(mesh[j]) # This is sometimes not needed but it doesn't dominate the compute time
             nfld = normal(mesh[i]) # Same
 
             val :: ComplexF32 = @inbounds -sum(
@@ -138,7 +134,7 @@ make_fixer(OP, mesh, PROJ; k,
                     zip(h_proj[j], Iterators.product(neighsidx[j]...))) 
             )
                     
-            val += operator_elem(OP, mesh[i], mesh[j]; k, quad)
+            val += operator_element(OP, mesh[i], mesh[j]; k, quad)
 
             val
             
@@ -157,7 +153,7 @@ end
 
 """
 Return a function that, given 2 indices grid nodes and the normals
-of the facets, returns the contribution of such nodes in the potential
+of the facets, returns the contribution of such nodes in the kernel
 of the operator.
 """
 function potata_idx(::Type{L}, grid; k)
@@ -247,10 +243,10 @@ end
 
 
 """
-Make a SMatrix{ThunkArray} that lazily return the potentials of OP sampled
+Make a SMatrix{ThunkArray} that lazily return the kernels of OP sampled
 at multiples of `step(grid)`.
 """
-make_cache(OP, grid; k, dims=size(grid)) = map(BEM.potential(OP; k)) do pot
+make_cache(OP, grid; k, dims=size(grid)) = map(BEM.kernel(OP; k)) do pot
     fun(idx) :: ComplexF32 = pot(step(grid) .* (SVector(idx) .- 1))
     ThunkArray(fun, dims)
 end
@@ -278,7 +274,7 @@ make_fixer(OP, mesh, PROJ; k,
 
     neighvals = get_neighbouring_nodes(PROJ.interp)
 
-    fun = potcomponent(potential(OP; k)) # Maybe type unstable and bothers? 
+    fun = potcomponent(kernel(OP; k)) # Maybe type unstable and bothers? 
 
     
     @mytime "Calculating the terms" vals = ThreadsX.map(ijs) do (i, j)
@@ -294,7 +290,7 @@ make_fixer(OP, mesh, PROJ; k,
             for ((hi, x), (hp, y)) in Iterators.product(zip(h_interp[i], neighvals[i]), zip(h_proj[j], neighvals[j])) 
         )
                 
-        val += operator_elem(OP, mesh[i], mesh[j]; k, quad)
+        val += operator_element(OP, mesh[i], mesh[j]; k, quad)
 
         val
         
